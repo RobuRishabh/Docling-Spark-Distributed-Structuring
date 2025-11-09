@@ -66,7 +66,7 @@ def process_pdf_wrapper(file_path: str) -> dict:
     Because PySpark's MapType needs all values to be the same type!
     """
     # Import inside the function (lazy import for Spark workers)
-    from processor import docling_process
+    from docling_module.processor import docling_process
 
     # Call the docling_process function
     # This creates a NEW processor on each worker (not serialized from driver)
@@ -75,12 +75,14 @@ def process_pdf_wrapper(file_path: str) -> dict:
     # Convert the result to a dictionary
     result_dict = result.to_dict()
     
-    # Convert all metadata values to strings
+    # Convert all metadata values to strings (PySpark requirement)
     if result_dict.get('metadata'):
         result_dict['metadata'] = {
             key: str(value) if value is not None else ""
             for key, value in result_dict['metadata'].items()
         }
+    else:
+        result_dict['metadata'] = {}
     
     return result_dict
 
@@ -105,16 +107,41 @@ def create_spark():
         .config("spark.sql.execution.arrow.pyspark.enabled", "false") \
         .config("spark.executor.memory", "2g") \
         .config("spark.driver.memory", "2g") \
+        .config("spark.python.worker.faulthandler.enabled", "true") \
+        .config("spark.sql.execution.pyspark.udf.faulthandler.enabled", "true") \
         .getOrCreate()
 
     # make it less chatty
     spark.sparkContext.setLogLevel("WARN")
 
-    # ADD THESE LINES - Distribute the docling_module to workers
+    # Distribute the docling_module to workers as a zip file
     import os
+    import zipfile
+    import tempfile
+    
     module_path = os.path.join(os.path.dirname(__file__), "docling_module")
-    for py_file in ["__init__.py", "processor.py"]:
-        spark.sparkContext.addPyFile(os.path.join(module_path, py_file))
+    
+    if os.path.exists(module_path):
+        # Create a temporary zip file
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
+            zip_path = tmp.name
+        
+        # Package the entire docling_module directory
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(module_path):
+                for file in files:
+                    if file.endswith('.py'):
+                        file_path = os.path.join(root, file)
+                        # Create archive name preserving package structure
+                        arcname = os.path.relpath(file_path, os.path.dirname(module_path))
+                        zipf.write(file_path, arcname)
+                        print(f"   Packaged: {arcname}")
+        
+        # Add the zip to Spark workers
+        spark.sparkContext.addPyFile(zip_path)
+        print(f"   ✅ Added docling_module package to Spark workers")
+    else:
+        print(f"   ⚠️  Warning: docling_module not found at {module_path}")
 
     print(f"Spark session created with {spark.sparkContext.defaultParallelism} workers")
     return spark
@@ -128,14 +155,14 @@ def main():
     """
     
     print("\n" + "="*70)
-    print("📄 SIMPLE PDF PROCESSING WITH PYSPARK")
+    print("📄 ENHANCED PDF PROCESSING WITH PYSPARK + DOCLING")
     print("="*70)
     
     # ========== STEP 1: Create Spark ==========
     spark = create_spark()
     
     # Define output_path at the top level so it's accessible in finally block
-    output_path = Path(__file__).parent.parent / "output" / "results"
+    output_path = Path(__file__).parent.parent / "output" / "results.jsonl"
     
     try:
         # ========== STEP 2: Get list of PDF files ==========
@@ -146,11 +173,27 @@ def main():
         
         # Create a list of file paths to process
         # In real life, this could be thousands of files!
-        file_list = [
-            (str(pdf_path),),              # Valid PDF
+        file_list = []
+        
+        # Add existing PDF files
+        if pdf_path.exists():
+            file_list.append((str(pdf_path),))
+            print(f"   ✅ Found PDF: {pdf_path.name}")
+        else:
+            print(f"   ⚠️  PDF not found: {pdf_path}")
+        
+        # Add a few more test cases
+        file_list.extend([
             ("/fake/path/missing.pdf",),   # Will fail (doesn't exist)
-            (str(pdf_path),),              # Same file again (to show parallel processing)
-        ]
+        ])
+        
+        # If we have the same PDF, add it again to show parallel processing
+        if pdf_path.exists():
+            file_list.append((str(pdf_path),))  # Same file again
+        
+        if not file_list:
+            print("   ❌ No files to process!")
+            return
         
         # Create a DataFrame (like an Excel table)
         df_paths = spark.createDataFrame(file_list, ["document_path"])
@@ -174,6 +217,11 @@ def main():
         # ========== STEP 4: Process the files ==========
         print("\n🔄 Step 3: Processing files (this is where the magic happens!)...")
         print("   Spark is now distributing work to workers...")
+        print("   Each worker will:")
+        print("   - Import the enhanced docling processor")
+        print("   - Process PDFs with modern DoclingParseV4DocumentBackend")
+        print("   - Extract text, tables, and metadata")
+        print("   - Return structured results")
         
         # Apply the UDF to each row
         # PySpark automatically splits this across workers!
@@ -214,12 +262,28 @@ def main():
         print(f"   ✅ Successful: {successful}")
         print(f"   ❌ Failed: {failed}")
         
-        # Show successful files
+        # Show successful files with enhanced details
         if successful > 0:
             print("\n✅ Successful files:")
-            df_final.filter(col("success") == True).select(
-                "document_path", "success"
+            success_df = df_final.filter(col("success") == True)
+            success_df.select(
+                "document_path", 
+                "success",
+                col("metadata.file_name").alias("file_name"),
+                col("metadata.num_pages").alias("pages"),
+                col("metadata.confidence_score").alias("confidence"),
+                col("metadata.file_size").alias("size_bytes")
             ).show(truncate=False)
+            
+            # Show content preview for successful files
+            print("\n📄 Content preview (first 200 chars):")
+            for row in success_df.collect():
+                content = row['content']
+                if content:
+                    preview = content[:200] + "..." if len(content) > 200 else content
+                    print(f"   File: {Path(row['document_path']).name}")
+                    print(f"   Content: {preview}")
+                    print()
         
         # Show failed files
         if failed > 0:
@@ -228,40 +292,27 @@ def main():
                 "document_path", "error_message"
             ).show(truncate=False)
         
-        
-        # ========== STEP 8: Save results (Optional) ==========
+        # ========== STEP 8: Save results as JSONL ==========
         print("\n💾 Step 6: Saving results...")
-        
-        # output_path is now defined above, not here
-        
-        # Save as Parquet (efficient for big data)
-        df_final.write.mode("overwrite").parquet(str(output_path))
-        
+
+        # Save as JSONL (JSON Lines - one JSON per line)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        df_final.coalesce(1).write.mode("overwrite").json(str(output_path))
+
         print(f"   ✅ Results saved to: {output_path}")
-        
         print("\n🎉 ALL DONE!")
+    
+        # Show summary statistics
+        print("\n📊 Summary Statistics:")
+        if successful > 0:
+            # Calculate average content length
+            content_lengths = [len(row['content']) for row in success_df.collect() if row['content']]
+            if content_lengths:
+                avg_length = sum(content_lengths) / len(content_lengths)
+                print(f"   Average content length: {avg_length:.0f} characters")
+                print(f"   Total content extracted: {sum(content_lengths):,} characters")
         
-        # ========== STEP 9: Read and show saved results ==========
-        print("\n" + "="*70)
-        print("📖 READING SAVED RESULTS")
-        print("="*70)
-
-        # Read the saved parquet files (BEFORE stopping spark)
-        df_loaded = spark.read.parquet(str(output_path))
-
-        print("\n📊 Loaded results:")
-        df_loaded.show(truncate=False)
-
-        # Save as readable JSON
-        json_path = Path(__file__).parent.parent / "output" / "results.json"
-        df_loaded.coalesce(1).write.mode("overwrite").json(str(json_path))
-        print(f"\n💾 Also saved as JSON: {json_path}")
-
-        # Save as CSV
-        csv_path = Path(__file__).parent.parent / "output" / "results.csv"
-        df_loaded.coalesce(1).write.mode("overwrite").option("header", True).csv(str(csv_path))
-        print(f"💾 Also saved as CSV: {csv_path}")
-        print("✅ Done!")
+        print("✅ Enhanced processing complete!")
         
     except Exception as e:
         print(f"\n❌ ERROR: {e}")
