@@ -1,0 +1,4 @@
+docling
+pyspark
+python-dotenv
+
