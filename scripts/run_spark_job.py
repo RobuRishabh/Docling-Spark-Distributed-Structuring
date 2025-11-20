@@ -1,5 +1,5 @@
 """
-SIMPLE PySpark + Docling Integration
+PySpark + Docling Integration
 ====================================
 Process PDFs in parallel using PySpark
 
@@ -132,13 +132,13 @@ def create_spark():
                         # Create archive name preserving package structure
                         arcname = os.path.relpath(file_path, os.path.dirname(module_path))
                         zipf.write(file_path, arcname)
-                        print(f"   Packaged: {arcname}")
+                        print(f"Packaged: {arcname}")
         
         # Add the zip to Spark workers
         spark.sparkContext.addPyFile(zip_path)
-        print(f"   ✅ Added docling_module package to Spark workers")
+        print(f"✅ Added docling_module package to Spark workers")
     else:
-        print(f"   ⚠️  Warning: docling_module not found at {module_path}")
+        print(f"⚠️ Warning: docling_module not found at {module_path}")
 
     print(f"Spark session created with {spark.sparkContext.defaultParallelism} workers")
     return spark
@@ -180,7 +180,7 @@ def main():
         print(f"   Looking for PDFs in: {assets_dir}")
         
         if not assets_dir.exists():
-             print(f"   ❌ Input directory not found: {assets_dir}")
+             print(f"❌ Input directory not found: {assets_dir}")
              return
 
         # Create a list of file paths to process
@@ -189,10 +189,10 @@ def main():
         # Find all PDFs in directory
         for pdf_file in assets_dir.glob("*.pdf"):
              file_list.append((str(pdf_file),))
-             print(f"   ✅ Found PDF: {pdf_file.name}")
+             print(f"✅ Found PDF: {pdf_file.name}")
         
         if not file_list:
-            print(f"   ❌ No PDF files found in {assets_dir}!")
+            print(f"❌ No PDF files found in {assets_dir}!")
             return
         
         # Create a DataFrame (like an Excel table)
@@ -238,7 +238,7 @@ def main():
             col("document_path"),
             col("result.success").alias("success"),
             col("result.content").alias("content"),
-            to_json(col("result.metadata")).alias("metadata"), # <--- CHANGED: Convert Map to JSON String
+            to_json(col("result.metadata")).alias("metadata"), # <--- Convert Map to JSON String
             col("result.error_message").alias("error_message")
         ).cache()
         
@@ -260,7 +260,7 @@ def main():
             failed_docs = df_final.filter(col("success") == False).select("document_path", "error_message")
             for row in failed_docs.collect():
                 print(f"\n📄 {row['document_path']}:")
-                print(f"   Error: {row['error_message']}")
+                print(f"Error: {row['error_message']}")
 
         # ========== STEP 7: Analyze results ==========
         print("\n📈 Analysis:")
@@ -269,36 +269,32 @@ def main():
         successful = df_final.filter(col("success") == True).count()
         failed = df_final.filter(col("success") == False).count()
         
-        print(f"   Total files: {total}")
-        print(f"   ✅ Successful: {successful}")
-        print(f"   ❌ Failed: {failed}")
+        print(f"Total files: {total}")
+        print(f"✅ Successful: {successful}")
+        print(f"❌ Failed: {failed}")
         
         # Skip detailed display to avoid memory/serialization issues
         print("\n💡 Skipping detailed result display to prevent worker crashes.")
-        print("   Full results will be saved to the output file...")
+        print("Full results will be saved to the output file...")
         
         # ========== STEP 8: Save results as JSONL ==========
-        print("\n💾 Step 6: Saving results...")
+        print("\n💾 Step 6: Saving results to JSONL file...")
 
-        # Save as JSONL (JSON Lines - one JSON per line)
+        # Save as JSONL
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        print("Collecting data to driver to write locally...")
         
-        # --- FIX FOR MVP (No Shared Storage) ---
-        # Instead of distributed write (which lands on executors), 
-        # collect data to driver and write locally.
-        print("   Collecting data to driver to write locally...")
-        
-        # Convert to Pandas (safe for small-medium datasets < 2GB)
+        # Convert to Pandas
         pdf = df_final.toPandas()
         
         # Write to JSONL using Pandas
         pdf.to_json(output_path, orient='records', lines=True, force_ascii=False)
 
-        print(f"   ✅ Results saved to: {output_path}")
+        print(f"✅ Results saved to: {output_path}")
         print("\n🎉 ALL DONE!")
         print("✅ Enhanced processing complete!")
         
-        # ADD THIS BLOCK:
+        # Sleep for 60 minutes to allow file download from driver pod to local machine (for MVP)
         import time
         print("😴 Sleeping for 60 minutes to allow file download...")
         print("   Run: kubectl cp docling-spark-job-driver:/app/output/results.jsonl ./output/results.jsonl -n docling-spark")

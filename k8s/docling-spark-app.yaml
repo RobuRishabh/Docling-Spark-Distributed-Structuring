@@ -9,7 +9,7 @@ spec:
   mode: cluster
   image: quay.io/rishasin/docling-spark:latest
   imagePullPolicy: Always
-  timeToLiveSeconds: 1200  # <--- ADD THIS LINE (Keeps pod for 2 minutes)
+  timeToLiveSeconds: 1200  # <--- (Keeps pod for 20 minutes)
   mainApplicationFile: local:///app/scripts/run_spark_job.py
   arguments:
     - "--input-dir"

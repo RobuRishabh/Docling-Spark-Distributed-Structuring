@@ -1,5 +1,5 @@
 ## This contains the core Python function (docling processor) that handles the actual document processing.
-## It should have zero PySpark imports or spark-specific code.
+## Zero PySpark imports or spark-specific code.
 
 # standard imports
 import os
@@ -295,7 +295,6 @@ class DoclingPDFProcessor(DocumentProcessorInterface):
         Update the configuration for the processor.
         """
         self._config = config
-        # Reinitialize the converter with the new configuration
         self._converter = self._initialize_converter()
 
 class DocumentProcessorFactory:
