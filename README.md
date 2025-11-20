@@ -4,6 +4,8 @@
 
 A production-ready system that combines [Docling](https://github.com/DS4SD/docling) (for PDF understanding) with [Apache Spark](https://spark.apache.org/) (for distributed computing) to process thousands of documents in parallel on **Red Hat OpenShift Service on AWS (ROSA)**.
 
+**Note:** This guide prioritizes the `oc` command (OpenShift CLI), but `kubectl` can be used interchangeably for standard Kubernetes clusters or if you prefer it.
+
 ---
 
 ## 📖 How It Works
@@ -91,15 +93,15 @@ roleRef:
 # Create the namespace
 oc new-project kubeflow-spark-operator
 
-# Apply the SCC RoleBindings
-oc apply -f k8s/spark-scc-rolebindings.yaml
-
 # Install via Helm with namespace watching configuration
 helm install spark-operator spark-operator/spark-operator \
   --namespace kubeflow-spark-operator \
   --set webhook.enable=true \
   --set webhook.port=9443 \
   --set 'spark.jobNamespaces[0]=""'
+
+# Apply the SCC RoleBindings
+oc apply -f k8s/spark-scc-rolebindings.yaml
 ```
 
 > **Important:** The `spark.jobNamespaces[0]=""` setting tells the operator to watch **all namespaces** for `SparkApplication` resources. Without this, the operator won't detect jobs submitted to the `docling-spark` namespace.
@@ -189,13 +191,13 @@ Wait for the job to finish (check logs). As soon as you see this is your termina
 🎉 ALL DONE!
 ✅ Enhanced processing complete!
 😴 Sleeping for 60 minutes to allow file download...
-   Run: kubectl cp docling-spark-job-driver:/app/output/results.jsonl ./output/results.jsonl -n docling-spark
+   Run: oc cp docling-spark-job-driver:/app/output/results.jsonl ./output/results.jsonl -n docling-spark
 ```
 Open another terminal and run the below command to save the results.
 
 ```bash
 # Copy results to your local machine
-kubectl cp docling-spark-job-driver:/app/output/results.jsonl ./output/results.jsonl -n docling-spark
+oc cp docling-spark-job-driver:/app/output/results.jsonl ./output/results.jsonl -n docling-spark
 
 # View them
 head -n 5 output/results.jsonl
@@ -203,7 +205,7 @@ head -n 5 output/results.jsonl
 
 ### 4. Cleanup
 ```bash
-kubectl delete sparkapplication docling-spark-job -n docling-spark
+oc delete sparkapplication docling-spark-job -n docling-spark
 ```
 ---
 

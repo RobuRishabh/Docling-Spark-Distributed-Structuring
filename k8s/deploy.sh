@@ -11,8 +11,16 @@ SERVICE_ACCOUNT="spark-driver"
 # Step 1: Create Namespace
 echo ""
 echo "1.Ensuring namespace exists..."
-# Use 'oc' if available (for ROSA), otherwise 'kubectl'
+# Determine which CLI to use
 if command -v oc &> /dev/null; then
+    CLI="oc"
+    echo "   Detected OpenShift/ROSA environment. Using 'oc'."
+else
+    CLI="kubectl"
+    echo "   Standard Kubernetes environment. Using 'kubectl'."
+fi
+
+if [ "$CLI" == "oc" ]; then
     if ! oc get project $NAMESPACE &> /dev/null; then
         oc new-project $NAMESPACE
     else
@@ -25,10 +33,10 @@ fi
 # Step 2: Create RBAC
 echo ""
 echo "2. Creating RBAC (ServiceAccount, Role, RoleBinding)..."
-kubectl apply -f k8s/base/rbac.yaml
+$CLI apply -f k8s/base/rbac.yaml
 
 # Step 3: ROSA/OpenShift Specific Configuration (SCC)
-if command -v oc &> /dev/null; then
+if [ "$CLI" == "oc" ]; then
     echo ""
     echo "3. [ROSA/OpenShift Detected] Configuring SCC..."
     echo "   Allowing '$SERVICE_ACCOUNT' to run with any UID (needed for Spark images)..."
@@ -43,20 +51,21 @@ fi
 echo ""
 echo "4. Submitting Spark Application..."
 # Use replace --force to ensure the job is restarted if it already exists
-kubectl replace --force -f k8s/docling-spark-app.yaml || kubectl create -f k8s/docling-spark-app.yaml
+$CLI replace --force -f k8s/docling-spark-app.yaml || $CLI create -f k8s/docling-spark-app.yaml
 
 echo ""
 echo "✅ Deployment complete!"
+echo "🔔 Attention: Please run the following commands to check the status of the Spark Application:"
 echo ""
 echo "📊 Check status:"
-echo "   kubectl get sparkapplications -n $NAMESPACE"
-echo "   kubectl get pods -n $NAMESPACE -w"
+echo "   $CLI get sparkapplications -n $NAMESPACE"
+echo "   $CLI get pods -n $NAMESPACE -w"
 echo ""
 echo "📝 View logs:"
-echo "   kubectl logs -f docling-spark-job-driver -n $NAMESPACE"
+echo "   $CLI logs -f docling-spark-job-driver -n $NAMESPACE"
 echo ""
 echo "🌐 Access Spark UI (when driver is running):"
-echo "   kubectl port-forward -n $NAMESPACE svc/docling-spark-job-ui-svc 4040:4040"
+echo "   $CLI port-forward -n $NAMESPACE svc/docling-spark-job-ui-svc 4040:4040"
 echo "   Open: http://localhost:4040"
 echo ""
 echo "💡 Note: PDFs are processed from /app/assets in the Docker image"
