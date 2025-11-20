@@ -48,6 +48,70 @@ graph TD
 
 3.  **Kubeflow Spark Operator**: A Kubernetes controller that listens for `SparkApplication` resources (YAML files) and manages the lifecycle of the Spark Driver and Executors.
 
+### Namespace Architecture: Separation of Concerns
+
+This system uses **two separate namespaces** following Kubernetes best practices:
+
+#### **Namespace 1: `kubeflow-spark-operator`** (Infrastructure/Control Plane)
+
+**What runs here:**
+- `spark-operator-controller` - Watches for `SparkApplication` resources across configured namespaces
+- `spark-operator-webhook` - Validates `SparkApplication` manifests before creation
+
+**Why separate:**
+- **Separation of concerns** - The operator is infrastructure, not application code
+- **Security isolation** - Operator has elevated cluster permissions (create pods, services, etc.)
+- **Reusability** - One operator instance manages Spark jobs across multiple application namespaces
+- **Lifecycle independence** - Upgrade/restart the operator without affecting running Spark jobs
+- **Multi-tenancy** - Different teams can run isolated Spark jobs, all managed by the same operator
+
+#### **Namespace 2: `docling-spark`** (Application/Data Plane)
+
+**What runs here:**
+- `SparkApplication` resource - The job definition (YAML manifest)
+- `docling-spark-job-driver` - Your Spark driver pod (orchestrates processing)
+- `docling-spark-job-exec-*` - Your Spark executor pods (parallel PDF processing)
+- `spark-driver` ServiceAccount - Identity with least-privilege permissions
+
+**Why separate:**
+- **Application isolation** - Your workload is isolated from operator infrastructure
+- **Resource management** - Apply CPU/memory quotas per application namespace
+- **RBAC** - Fine-grained permissions (driver can only manage resources in its own namespace)
+- **Organization** - Clear boundary between infrastructure and application
+- **Easy cleanup** - Delete the namespace to remove all application resources at once
+
+#### **The Interaction Flow**
+
+```
+1. User submits SparkApplication YAML → docling-spark namespace
+2. Operator Controller detects it → kubeflow-spark-operator namespace
+3. Webhook validates the manifest → kubeflow-spark-operator namespace
+4. Controller creates Driver Pod → docling-spark namespace
+5. Driver spawns Executor Pods → docling-spark namespace
+6. Processing happens → docling-spark namespace
+7. Results collected → docling-spark namespace
+```
+```
+User submits SparkApplication
+         ↓
+    (docling-spark namespace)
+         ↓
+Operator Controller watches for it
+         ↓
+    (kubeflow-spark-operator namespace)
+         ↓
+Controller creates Driver Pod
+         ↓
+    (docling-spark namespace)
+         ↓
+Driver creates Executor Pods
+         ↓
+    (docling-spark namespace)
+```
+
+
+**Security benefit:** The `spark-driver` ServiceAccount only has permissions to create/manage pods within `docling-spark`. It cannot access the operator namespace or other application namespaces, following the **principle of least privilege**.
+
 ---
 
 ## 🧩 2. Deep Dive: The Codebase
