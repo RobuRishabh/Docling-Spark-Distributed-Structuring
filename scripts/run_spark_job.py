@@ -297,7 +297,7 @@ def main():
         # Sleep for 60 minutes to allow file download from driver pod to local machine (for MVP)
         import time
         print("😴 Sleeping for 60 minutes to allow file download...")
-        print("   Run: kubectl cp docling-spark-job-driver:/app/output/results.jsonl ./output/results.jsonl -n docling-spark")
+        print("   Run: oc cp docling-spark-job-driver:/app/output/results.jsonl ./output/results.jsonl -n docling-spark")
         time.sleep(3600)  # Sleep for 3600 seconds (60 minutes)
 
         spark.stop()

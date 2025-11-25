@@ -221,6 +221,7 @@ oc delete sparkapplication docling-spark-job -n docling-spark
 *   **`requirements.txt`**: Dependencies for **local development** (includes PySpark & macOS support).
 *   **`requirements-docker.txt`**: Dependencies optimized for the **Docker container** (Linux only).
 *   **`Conceptdocs.md`**: **Deep dive into architecture, decisions, and future roadmap.**
+*   **`SparkOperatorOnOpenShift.md`**: **Detailed guide on Spark Operator architecture, installation, and debugging on OpenShift.**
 
 ---
 
