@@ -1,28 +1,23 @@
-kind: RoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: spark-nonroot
-  namespace: kubeflow-spark-operator
-subjects:
-  - kind: ServiceAccount
-    name: spark-operator-controller
-    namespace: kubeflow-spark-operator
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: 'system:openshift:scc:nonroot-v2'
+# RoleBinding to allow Spark Operator pods to run under OpenShift's restricted-v2 SCC
+#
+# NOTE: Update the namespace if you install the operator in a different namespace.
+# Future improvement: Create a dedicated ServiceAccount for Spark jobs with
+# least-privilege Role bindings for better security isolation.
 ---
 kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: spark-nonroot2
-  namespace: kubeflow-spark-operator
+  name: spark-restricted
+  namespace: kubeflow-spark-operator  # Change this if using a different namespace
 subjects:
   - kind: ServiceAccount
+    name: spark-operator-controller
+    namespace: kubeflow-spark-operator  # Change this if using a different namespace
+  - kind: ServiceAccount
     name: spark-operator-webhook
-    namespace: kubeflow-spark-operator
+    namespace: kubeflow-spark-operator  # Change this if using a different namespace
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: 'system:openshift:scc:nonroot-v2'
+  name: 'system:openshift:scc:restricted-v2'
 

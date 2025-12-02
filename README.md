@@ -1,21 +1,29 @@
 # 🚀 Docling + Spark on ROSA
 
-**Distributed PDF Structure Extraction on Kubernetes**
+**Distributed PDF Structure Extraction on OpenShift (Red Hat AI)**
 
 A production-ready system that combines [Docling](https://github.com/DS4SD/docling) (for PDF understanding) with [Apache Spark](https://spark.apache.org/) (for distributed computing) to process thousands of documents in parallel on **Red Hat OpenShift Service on AWS (ROSA)**.
 
-**Note:** This guide prioritizes the `oc` command (OpenShift CLI), but `kubectl` can be used interchangeably for standard Kubernetes clusters or if you prefer it.
+**Note:** This guide prioritizes the `oc` command (OpenShift CLI), but `kubectl` can be used interchangeably.
+
+---
+
+## 🤖 About the `docling-spark` Application
+The `docling-spark` application serves as a reference architecture for:
+*   **Scale:** processing massive document archives using distributed executors.
+*   **Intelligence:** extracting deep structure (tables, layout) using the `docling` library.
+*   **Security:** running safely in restricted enterprise environments (OpenShift `restricted-v2`).
 
 ---
 
 ## 📖 How It Works
-1.  **Spark Operator** launches a Driver Pod.
+1.  **Spark Operator** (running on OpenShift) launches a Driver Pod.
 2.  **Driver** distributes Docling code to Executor Pods.
 3.  **Executors** process PDFs in parallel (OCR, Layout Analysis, Table Extraction).
 4.  **Driver** collects results into a single `results.jsonl` file.
-5.  **You** retrieve the results with a single command.
+5.  Retrieve the results with a single command.
 
-![Architecture Diagram](diagrams/Screenshot%202025-11-19%20at%209.35.21%E2%80%AFPM.png)
+![Architecture Diagram](diagrams/Explanation_diagram.png)
 
 👉 **[Read the full Architecture & Concepts Guide (Conceptdocs.md)](./Conceptdocs.md)**
 
@@ -23,17 +31,17 @@ A production-ready system that combines [Docling](https://github.com/DS4SD/docli
 
 ## ✅ Prerequisites
 
-1.  **ROSA / OpenShift Cluster** (or any Kubernetes cluster).
-2.  **Kubeflow Spark Operator** installed on the cluster (see guide below).
-3.  **`oc`** or **`kubectl`** CLI configured.
+1.  **OpenShift Cluster**.
+2.  **Cluster Admin Setup**: The Kubeflow Spark Operator must be installed by an admin first (see [Installation Guide](#-kubeflow-spark-operator-installation)).
+3.  **`oc`** CLI configured.
 4.  **Docker** (for building images).
 5.  **Quay.io** account (or any container registry).
 
 ---
 
-## 🛠️ Kubeflow Spark Operator Installation (ROSA)
+## 🛠️ Kubeflow Spark Operator Installation
 
-If you haven't installed the Spark Operator yet, follow these steps to set it up on your ROSA cluster.
+> **Pre-requisite:** This section requires **Cluster Admin** privileges. You must install the operator once so that users can submit `SparkApplication` CRDs.
 
 ### 1. Prepare the Cluster
 ```bash
@@ -48,44 +56,41 @@ helm repo add spark-operator https://kubeflow.github.io/spark-operator
 helm repo update
 ```
 
-### 2. Configure Permissions (SCC)
-OpenShift requires specific Security Context Constraints (SCC) for the Spark Operator to run correctly.
+### 2. Prepare Values File
 
-> **Note:** SCCs are OpenShift's way of controlling what permissions pods have (similar to Pod Security Standards in vanilla Kubernetes). The Spark Operator needs `nonroot-v2` SCC to run its containers with non-root user IDs.
+We need to override some default Helm values to ensure:
+1.  **Security**: The operator is compatible with OpenShift's `restricted-v2` SCC (letting OpenShift assign User IDs automatically).
+2.  **Functionality**: The operator watches **all namespaces** for SparkApplications (crucial for the `docling-spark` namespace to work).
 
-The repository includes a pre-configured file `k8s/spark-scc-rolebindings.yaml` with the following content:
+Create a `spark-operator-values.yaml` file (or use the one in the repo):
 
 ```yaml
-kind: RoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: spark-nonroot
-  namespace: kubeflow-spark-operator
-subjects:
-  - kind: ServiceAccount
-    name: spark-operator-controller
-    namespace: kubeflow-spark-operator
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: 'system:openshift:scc:nonroot-v2'
----
-kind: RoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: spark-nonroot2
-  namespace: kubeflow-spark-operator
-subjects:
-  - kind: ServiceAccount
-    name: spark-operator-webhook
-    namespace: kubeflow-spark-operator
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: 'system:openshift:scc:nonroot-v2'
+# spark-operator-values.yaml
+controller:
+  podSecurityContext:
+    fsGroup: null  # Override upstream default to let OpenShift SCC assign
+
+webhook:
+  enable: true
+  podSecurityContext:
+    fsGroup: null  # Override upstream default to let OpenShift SCC assign
+
+spark:
+  jobNamespaces: []  # Watch all namespaces
 ```
 
-**What this does:** Grants the Spark Operator's service accounts permission to run containers as non-root users (UIDs > 0), which is required for the operator pods to start successfully on OpenShift.
+> **Important:** The `spark.jobNamespaces: []` setting tells the operator to watch **all namespaces**. Without this, the operator won't detect jobs submitted to the `docling-spark` namespace.
+>
+> **Production Tip:** For better encapsulation and control over permissions, specify a list of allowed namespaces instead of watching all:
+> ```yaml
+> spark:
+>   jobNamespaces:
+>     - spark-jobs
+>     - analytics
+> ```
+> This limits where Spark jobs can run and provides better security isolation.
+>
+> **Zsh Users:** Using this `values.yaml` file is the recommended way to install. It avoids common shell quoting errors (like `zsh: no matches found: spark.jobNamespaces[0]=""`) that occur when passing complex flags directly to Helm.
 
 ### 3. Install the Operator
 
@@ -93,36 +98,19 @@ roleRef:
 # Create the namespace
 oc new-project kubeflow-spark-operator
 
-# Install via Helm with namespace watching configuration
-helm install spark-operator spark-operator/spark-operator \
-  --namespace kubeflow-spark-operator \
-  --set webhook.enable=true \
-  --set webhook.port=9443 \
-  --set 'spark.jobNamespaces[0]=""'
-
-# Apply the SCC RoleBindings
+# Configure SCC permissions (must be done after namespace creation)
 oc apply -f k8s/spark-scc-rolebindings.yaml
+
+# Install via Helm
+helm install spark-operator spark-operator/spark-operator \
+    --namespace kubeflow-spark-operator \
+    -f spark-operator-values.yaml \
+    --version 2.2.1
 ```
 
-> **Important:** The `spark.jobNamespaces[0]=""` setting tells the operator to watch **all namespaces** for `SparkApplication` resources. Without this, the operator won't detect jobs submitted to the `docling-spark` namespace.
-> 
-> **Alternative:** To watch only specific namespaces, use: `--set 'spark.jobNamespaces[0]=docling-spark'`
->
-> **Zsh users:** If you get a "no matches found" error, use a values file instead:
-> ```bash
-> cat > /tmp/spark-values.yaml <<EOF
-> spark:
->   jobNamespaces:
->     - ""
-> webhook:
->   enable: true
->   port: 9443
-> EOF
-> 
-> helm install spark-operator spark-operator/spark-operator \
->   --namespace kubeflow-spark-operator \
->   -f /tmp/spark-values.yaml
-> ```
+> **Version Note:** We use v2.2.1 which includes Spark 3.5.5. Newer versions (v2.3.x+) ship with Spark 4.x which may have breaking changes. See the [version matrix](https://github.com/kubeflow/spark-operator?tab=readme-ov-file#version-matrix) for details.
+
+> **Note:** The `k8s/spark-scc-rolebindings.yaml` binds the operator's ServiceAccounts to the `restricted-v2` SCC, allowing the Spark Operator and its webhooks to run correctly without root privileges. If you use a different namespace, update the namespace references in this file.
 
 ### 4. Verify Installation
 ```bash
@@ -178,7 +166,7 @@ Proceed directly to Step 2 (Deploy to ROSA).
 4. **Proceed to Step 2** (Deploy to ROSA).
 
 ### 2. Deploy to ROSA
-This script handles Namespace, RBAC, SCC (Permissions), and Job Submission.
+This script handles Namespace, RBAC, and Job Submission.
 
 ```bash
 chmod +x k8s/deploy.sh

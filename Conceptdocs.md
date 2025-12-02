@@ -10,25 +10,7 @@ This project combines **Docling** (a state-of-the-art PDF processing library) wi
 
 ### The High-Level Flow
 
-```mermaid
-graph TD
-    A[User/Developer] -->|Deploys Job| B[Kubernetes/ROSA Cluster]
-    B --> C[Spark Driver Pod]
-    C -->|Spawns| D[Executor Pod 1]
-    C -->|Spawns| E[Executor Pod 2]
-    
-    subgraph "Inside Driver"
-        F[Main Script] -->|Distributes Code| D
-        F -->|Distributes Code| E
-    end
-    
-    subgraph "Inside Executor"
-        D -->|Reads PDF| G[Docling Processor]
-        E -->|Reads PDF| G
-        G -->|Returns JSON| F
-    end
-```
-![Architecture Diagram](diagrams/Screenshot%202025-11-19%20at%209.35.21%E2%80%AFPM.png)
+![Architecture Diagram](diagrams/Mermaid_chart.png)
 
 
 ### Key Components
@@ -46,11 +28,11 @@ graph TD
     *   Run the heavy `docling` processing (OCR, Layout Analysis, Table Extraction).
     *   Return structured data back to the driver.
 
-3.  **Kubeflow Spark Operator**: A Kubernetes controller that listens for `SparkApplication` resources (YAML files) and manages the lifecycle of the Spark Driver and Executors.
+3.  **Kubeflow Spark Operator**: A controller running on the **OpenShift cluster** that listens for `SparkApplication` resources (YAML files) and manages the lifecycle of the Spark Driver and Executors.
 
 ### Namespace Architecture: Separation of Concerns
 
-This system uses **two separate namespaces** following Kubernetes best practices:
+This system uses **two separate namespaces** following OpenShift best practices:
 
 #### **Namespace 1: `kubeflow-spark-operator`** (Infrastructure/Control Plane)
 
@@ -137,18 +119,19 @@ The custom image `quay.io/rishasin/docling-spark` is built for scale.
 *   **Optimization**: Dependencies (`requirements.txt`) are installed *before* copying code to leverage Docker layer caching.
 *   **System Libs**: Includes `libgl1` and `tesseract-ocr` required by Docling.
 *   **Baked-in Assets**: For this MVP, PDF files are copied directly into `/app/assets` inside the image.
+*   **OpenShift Compatibility**: Critical directories (like `/opt/spark/work-dir`) are set to `chmod 777` (world-writable). This allows the container to run as **any arbitrary User ID** assigned by OpenShift, ensuring security compliance without needing elevated `anyuid` permissions.
 
 ### ☸️ Kubernetes Manifests (`k8s/`)
 
 *   **`deploy.sh`**: The master control script. It handles:
     1.  Namespace creation.
     2.  RBAC setup (permissions).
-    3.  **SCC Configuration**: Automatically detects OpenShift and applies `anyuid` SCC to allow the Spark user to run.
-    4.  Job submission.
+    3.  Job submission.
 *   **`docling-spark-app.yaml`**: The definition of our job. It tells the Spark Operator:
     *   Which Docker image to use.
     *   How much RAM/CPU to give the Driver and Executors.
     *   The arguments (`--input-dir`, `--output-file`).
+    *   **Security Context**: Explicitly sets `runAsNonRoot: true` to adhere to OpenShift's `restricted-v2` SCC.
 
 ---
 
@@ -203,16 +186,37 @@ If you must run on-prem without object storage.
 
 Running Spark on OpenShift requires special attention to security.
 
-*   **User IDs**: Standard Docker containers run as `root` (UID 0). OpenShift forbids this by default. We use the `anyuid` Security Context Constraint (SCC) to allow the Spark image (which runs as UID 185) to function correctly.
+*   **Restricted v2 SCC**: OpenShift is secure by default. We configure our Spark pods to run without hardcoded User IDs (`runAsUser`), allowing OpenShift to automatically assign a secure, isolated User ID from the namespace's allocated range.
+*   **Arbitrary UID Support**: The Docker image is built with world-writable (`chmod 777`) directories for Spark's working areas. This ensures that whatever random UID OpenShift assigns to the pod can successfully write files, even if the group ID is not root.
 *   **Service Accounts**: The `spark-driver` ServiceAccount is the identity of your pod. We bind permissions to this account, ensuring least-privilege access.
+    
+    **Future improvement:** Create a dedicated ServiceAccount specifically for Spark jobs with fine-grained Role bindings. This would allow admins to grant only the minimum permissions needed to run jobs, further improving security isolation.
+*   **Helm Values & `fsGroup: null`**: When installing the Spark Operator via Helm, the upstream chart defaults to `fsGroup: 185`. This hardcoded value conflicts with OpenShift's `restricted-v2` SCC, which requires `fsGroup` to come from the namespace's allocated UID range. 
+    
+    **Why `{}` doesn't work:** Helm performs a deep merge of values. Setting `podSecurityContext: {}` merges with the chart defaults, so `fsGroup: 185` persists in the rendered Deployment manifests.
+    
+    **The fix:** Explicitly set `fsGroup: null` to remove the field entirely from the manifest. This allows OpenShift's SCC admission controller to inject the correct `fsGroup` from the namespace's UID range automatically.
+
+*   **Namespace Isolation with `jobNamespaces`**: The Spark Operator can be configured to watch all namespaces (`jobNamespaces: []`) or only specific ones. For production environments, it's recommended to specify a list of allowed namespaces:
+    
+    ```yaml
+    spark:
+      jobNamespaces:
+        - spark-jobs
+        - analytics
+    ```
+    
+    **Benefits:**
+    - **Encapsulation**: Limits where Spark jobs can run, preventing accidental deployments to unintended namespaces.
+    - **Permission Control**: Allows admins to apply different RBAC policies per namespace.
+    - **Multi-tenancy**: Different teams can have isolated namespaces with their own resource quotas and policies.
 
 ---
 
 ## 📚 Glossary
 
 *   **CRD (Custom Resource Definition)**: Extends Kubernetes with new types. We use `SparkApplication`.
-*   **SCC (Security Context Constraints)**: OpenShift's way of controlling pod permissions (like `root` access).
+*   **SCC (Security Context Constraints)**: OpenShift's way of controlling pod permissions. We aim for `restricted-v2` (default, highest security).
 *   **Driver**: The manager process.
 *   **Executor**: The worker process.
 *   **ROSA**: Red Hat OpenShift on AWS.
-
