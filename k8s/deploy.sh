@@ -35,21 +35,9 @@ echo ""
 echo "2. Creating RBAC (ServiceAccount, Role, RoleBinding)..."
 $CLI apply -f k8s/base/rbac.yaml
 
-# Step 3: ROSA/OpenShift Specific Configuration (SCC)
-if [ "$CLI" == "oc" ]; then
-    echo ""
-    echo "3. [ROSA/OpenShift Detected] Configuring SCC..."
-    echo "   Allowing '$SERVICE_ACCOUNT' to run with any UID (needed for Spark images)..."
-    oc adm policy add-scc-to-user anyuid -z $SERVICE_ACCOUNT -n $NAMESPACE
-    echo "   ✅ SCC 'anyuid' added to ServiceAccount '$SERVICE_ACCOUNT'"
-else
-    echo ""
-    echo "Standard Kubernetes detected (Skipping OpenShift SCC configuration)"
-fi
-
-# Step 4: Submit Spark Application
+# Step 3: Submit Spark Application
 echo ""
-echo "4. Submitting Spark Application..."
+echo "3. Submitting Spark Application..."
 # Use replace --force to ensure the job is restarted if it already exists
 $CLI replace --force -f k8s/docling-spark-app.yaml || $CLI create -f k8s/docling-spark-app.yaml
 

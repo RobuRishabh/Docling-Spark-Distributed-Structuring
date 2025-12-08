@@ -1,8 +1,22 @@
-# Kubeflow Spark Operator on OpenShift
+# Kubeflow Spark Operator on Red Hat AI
 
-This documentation details how the Kubeflow Spark Operator works on OpenShift, its architecture, installation, and how to run a distributed Spark workload using the `docling` library.
+This documentation details how the Kubeflow Spark Operator works on Red Hat AI, its architecture, installation, and how to run a distributed Spark workload using the `docling-spark` application.
 
-## 1. SparkApplication CRD
+## 1. About Docling-Spark Application
+
+The `docling-spark` application demonstrates a production-grade pattern for processing documents at scale using:
+*   **Docling**: For advanced document layout analysis and understanding.
+*   **Apache Spark**: For distributed processing across the cluster.
+*   **Kubeflow Spark Operator**: For native Kubernetes lifecycle management.
+
+### How Docling-Spark Application Works
+1.  **Spark Operator** (running on OpenShift) launches a Driver Pod.
+2.  **Driver** distributes Docling code to Executor Pods.
+3.  **Executors** process PDFs in parallel (OCR, Layout Analysis, Table Extraction).
+4.  **Driver** collects results into a single `results.jsonl` file.
+5.  Retrieve the results with a single command.
+
+## 2. SparkApplication CRD
 
 The **SparkApplication** Custom Resource Definition (CRD) is the core abstraction provided by the operator. It allows you to define Spark applications declaratively using Kubernetes YAML manifests, similar to how you define Deployments or Pods.
 
@@ -14,7 +28,7 @@ Key fields in the `SparkApplication` spec include:
 *   **`mainApplicationFile`**: The entry point path (e.g., `local:///app/scripts/run_spark_job.py`).
 *   **`sparkVersion`**: The version of Spark to use (must match the image).
 *   **`restartPolicy`**: Handling of failures (`Never`, `OnFailure`, `Always`).
-*   **`driver` / `executor`**: Resource requests (cores, memory), labels, and service accounts for the driver and executor pods.
+*   **`driver` / `executor`**: Resource requests (cores, memory), labels, service accounts, and **security contexts**.
 
 Example snippet from `k8s/docling-spark-app.yaml`:
 
@@ -32,12 +46,20 @@ spec:
     cores: 1
     memory: "4g"
     serviceAccount: spark-driver
+    securityContext:
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
   executor:
     instances: 2
     memory: "4g"
+    securityContext:
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
 ```
 
-## 2. Spark Operator Architecture
+## 3. Spark Operator Architecture
 
 The Spark Operator follows the standard Kubernetes Operator pattern:
 
@@ -48,17 +70,21 @@ The Spark Operator follows the standard Kubernetes Operator pattern:
 
 ### Flow on OpenShift
 
+> **Note:** The Operator must be installed by a Cluster Admin before users can submit jobs.
+
 1.  User applies `SparkApplication` YAML.
 2.  Operator Controller (running in `kubeflow-spark-operator` namespace) detects the new resource.
-3.  Operator creates a **Driver Pod** in the target namespace (e.g., `docling-spark`).
-4.  Driver Pod starts and requests **Executor Pods** from the Kubernetes API server.
+3.  Operator creates a **Driver Pod** in the target namespace (e.g., `docling-spark`) via the OpenShift Cluster.
+4.  Driver Pod starts and requests **Executor Pods** from the OpenShift Cluster.
 5.  Executor Pods start, connect to the Driver, and process the tasks.
 
-![Spark Operator Flow on OpenShift](diagrams/Screenshot%202025-11-19%20at%209.35.21%E2%80%AFPM.png)
+![Spark Operator Flow on OpenShift](diagrams/Explanation_diagram.png)
 
-## 3. Installation on OpenShift
+## 4. Installation on OpenShift
 
-Installing the Spark Operator on OpenShift requires Helm and applying specific security patches to work with OpenShift's default security context constraints (SCC).
+> **Pre-requisite:** This section requires **Cluster Admin** privileges. You must install the operator once so that users can submit `SparkApplication` CRDs.
+
+Installing the Spark Operator on OpenShift requires Helm and configuring it to work with OpenShift's `restricted-v2` Security Context Constraints (SCC).
 
 ### Prerequisites
 *   OpenShift CLI (`oc`)
@@ -67,50 +93,57 @@ Installing the Spark Operator on OpenShift requires Helm and applying specific s
 
 ### Installation Steps
 
-1.  **Add the Helm Repository**:
+1.  **Prepare the Cluster**:
     ```bash
+    oc login
+    brew install helm
     helm repo add spark-operator https://kubeflow.github.io/spark-operator
     helm repo update
     ```
 
-2.  **Install the Operator**:
-    Run the following command to install the operator in the `spark-operator` namespace.
+2.  **Prepare Values File** (`spark-operator-values.yaml`):
+    ```yaml
+    controller:
+      podSecurityContext:
+        fsGroup: null
+    webhook:
+      enable: true
+      podSecurityContext:
+        fsGroup: null
+    spark:
+      jobNamespaces: []  # Watch all namespaces
+      # For production, specify allowed namespaces:
+      # jobNamespaces:
+      #   - spark-jobs
+      #   - analytics
+    ```
+    > **Namespace Control:** Using `jobNamespaces: []` watches all namespaces. For better encapsulation and permission control, specify a list of allowed namespaces where Spark jobs can run.
 
+3.  **Install the Operator**:
     ```bash
+    oc new-project kubeflow-spark-operator
+    oc apply -f k8s/spark-scc-rolebindings.yaml
     helm install spark-operator spark-operator/spark-operator \
-        --namespace spark-operator \
-        --create-namespace \
-        --version 1.1.27 \
-        --set webhook.enable=true \
-        --set spark.jobNamespaces='{}'  # Watch all namespaces
+        --namespace kubeflow-spark-operator \
+        -f spark-operator-values.yaml \
+        --version 2.2.1
     ```
+    > **Version Note:** We use v2.2.1 (Spark 3.5.5). See the [version matrix](https://github.com/kubeflow/spark-operator?tab=readme-ov-file#version-matrix) for details.
+    
+    > **Namespace Note:** If you use a different namespace, update the namespace references in `k8s/spark-scc-rolebindings.yaml` before applying.
 
-3.  **Apply OpenShift Security Patches**:
-    OpenShift is stricter than standard Kubernetes about running containers as root or with specific security contexts. You must remove incompatible security contexts from the operator's deployment.
-
+5.  **Verify Installation**:
     ```bash
-    # Patch the Controller
-    kubectl patch deployment spark-operator-controller -n spark-operator --type='json' \
-      -p='[{"op": "remove", "path": "/spec/template/spec/securityContext/fsGroup"}]'
-
-    kubectl patch deployment spark-operator-controller -n spark-operator --type='json' \
-      -p='[{"op": "remove", "path": "/spec/template/spec/containers/0/securityContext/seccompProfile"}]'
-
-    # Patch the Webhook
-    kubectl patch deployment spark-operator-webhook -n spark-operator --type='json' \
-      -p='[{"op": "remove", "path": "/spec/template/spec/securityContext/fsGroup"}]'
-
-    kubectl patch deployment spark-operator-webhook -n spark-operator --type='json' \
-      -p='[{"op": "remove", "path": "/spec/template/spec/containers/0/securityContext/seccompProfile"}]'
+    oc get pods -n kubeflow-spark-operator
     ```
 
-## 4. Debugging and Logging
+## 5. Debugging and Logging
 
 ### Operator Logs
 If your Spark jobs are not starting (e.g., no pods created), check the operator logs:
 
 ```bash
-oc logs -n spark-operator -l app.kubernetes.io/name=spark-operator
+oc logs -n kubeflow-spark-operator -l app.kubernetes.io/name=spark-operator
 ```
 
 ### Application Logs
@@ -131,7 +164,7 @@ Inspect the status of the CRD to see if the operator encountered validation erro
 oc describe sparkapplication docling-spark-job -n docling-spark
 ```
 
-## 5. Running the Example Workload (Docling + Spark)
+## 6. Running the Example Workload (Docling + Spark)
 
 This repository contains a complete example of a distributed Spark job that uses the `docling` library to process PDFs.
 
@@ -140,14 +173,14 @@ This repository contains a complete example of a distributed Spark job that uses
 *   **`Dockerfile`**: Builds a custom Spark image containing `docling`, `tesseract`, and other dependencies.
 *   **`k8s/docling-spark-app.yaml`**: The `SparkApplication` definition.
 
-![Spark Workload Flow](diagrams/Mermaid%20Chart%20-%20Create%20complex%2C%20visual%20diagrams%20with%20text.-2025-11-20-023412.png)
+![Spark Workload Flow](diagrams/Mermaid_chart.png)
 
 ### Running the Job
 
 1.  **Clone the Repository** and navigate to the root.
 
 2.  **Deploy using the Script**:
-    The included `deploy.sh` script handles namespace creation, RBAC setup, SCC configuration (crucial for OpenShift), and job submission.
+    The included `deploy.sh` script handles namespace creation, RBAC setup, and job submission.
 
     ```bash
     ./k8s/deploy.sh
@@ -156,7 +189,6 @@ This repository contains a complete example of a distributed Spark job that uses
     **What this script does:**
     *   Creates/Ensures namespace `docling-spark`.
     *   Creates ServiceAccount `spark-driver` and binds necessary roles.
-    *   **OpenShift Specific**: Adds the `anyuid` SCC to `spark-driver` so the Spark image (UID 185) can run.
     *   Applies `k8s/docling-spark-app.yaml`.
 
 3.  **Verify Execution**:
@@ -184,4 +216,3 @@ This repository contains a complete example of a distributed Spark job that uses
 *   [Red Hat Developer: Raw Data to Model Serving](https://developers.redhat.com/articles/2025/07/29/raw-data-model-serving-openshift-ai)
 *   [Red Hat Access: Spark Operator on OpenShift](https://access.redhat.com/articles/7131048)
 *   [Kubeflow Spark Operator GitHub](https://github.com/kubeflow/spark-operator)
-

@@ -33,18 +33,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
 ENV PYTHONPATH="/app:$PYTHONPATH"
 ENV HOME=/home/spark
 
-# Create directories and set permissions
 RUN mkdir -p /app/input /app/output /home/spark && \
     chmod 777 /app/input /app/output && \
+    chmod -R 777 /opt/spark/work-dir && \
     if ! id -u spark > /dev/null 2>&1; then \
         useradd -m -u 185 -s /bin/bash spark; \
     fi && \
-    chown -R spark:spark /home/spark /app && \
-    chmod -R 755 /home/spark
+    chown -R spark:0 /home/spark /app && \
+    chmod -R 777 /home/spark /app
 
-# Copy application code LAST (so code changes don't invalidate pip cache)
-COPY --chown=spark:spark scripts/ /app/scripts/
-COPY --chown=spark:spark assets/ /app/assets/
+# Copy application code LAST
+COPY --chown=spark:0 scripts/ /app/scripts/
+COPY --chown=spark:0 assets/ /app/assets/
 
 # Switch to non-root user
 USER spark
